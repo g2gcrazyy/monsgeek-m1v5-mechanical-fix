@@ -48,6 +48,10 @@ START_SETTLE = 1.1                       # s after BA C0 before the first chunk 
 MAX_SIZE = 0x08028000 - 0x08005000      # must not reach the config region
 DEV_ID = 2949                            # MonsGeek M1 V5 TMR (GET_USB_VERSION bytes 1-4)
 ATTEMPTS = 3                             # a lost chunk makes the bootloader reject; just resend
+# stock V408 (to go back to MonsGeek's firmware without ry_upgrade.exe)
+STOCK_V408_FILE_SIZE = 132864            # firmware_2949_v408.bin as published by monsgeek-akko-linux
+STOCK_V408_SIZE = 0x206F0                # what ry_upgrade.exe sends (USBPcap capture)
+STOCK_V408_SHA256 = "f7f89d2d7dca3e4aa9a5a1b84fcdc4eada7cf332b72b199d29e0ab6c81b3f789"
 
 
 def bit7(cmd, *params):
@@ -182,6 +186,11 @@ def main():
     args = ap.parse_args()
 
     data = open(args.image, "rb").read()
+    if len(data) == STOCK_V408_FILE_SIZE and hashlib.sha256(data[:STOCK_V408_SIZE]).hexdigest() == STOCK_V408_SHA256:
+        # public stock image (firmware_2949_v408.bin) carries a 16-byte vendor trailer that
+        # ry_upgrade.exe does not send: send exactly what ry_upgrade sends
+        data = data[:STOCK_V408_SIZE]
+        print("stock V408 image detected: sending the first 0x206F0 bytes, exactly as ry_upgrade.exe does")
     problems, sp, reset = validate(data)
     chunks = (len(data) + CHUNK - 1) // CHUNK
     csum = checksum(data)

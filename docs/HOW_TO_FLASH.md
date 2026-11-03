@@ -17,7 +17,7 @@ This is an **unofficial** firmware: MonsGeek's V408 plus the fixes described in 
   - `firmware_v4.bin` from this repository's **Releases** page. Check that its SHA-256 matches the one shown on the release.
   - The `tools` folder. Use **Code → Download ZIP** on the repository page and unzip it.
   - Put `firmware_v4.bin` in the `tools` folder.
-- **Optional, for recovery:** MonsGeek's official V408 update package (`ry_upgrade.exe`), from MonsGeek support. Keep it handy just in case.
+- **Recommended, for recovery:** the stock V408 firmware, [`firmware_2949_v408.bin`](https://github.com/echtzeit-solutions/monsgeek-akko-linux/raw/master/firmwares/2949-v408/firmware_2949_v408.bin) from the monsgeek-akko-linux project. Save it in the `tools` folder. You don't need MonsGeek's `ry_upgrade.exe`: `flash_fw.py` sends this file exactly the way `ry_upgrade.exe` does.
 
 ## 2. Before flashing
 1. **Close MonsGeek's driver/app and its web page,** so nothing else talks to the keyboard.
@@ -50,6 +50,12 @@ python flash_fw.py firmware_v4.bin --yes
 5. **Do not accept firmware updates** in MonsGeek's app. An update would replace this firmware, and later official versions (V410) have the double-press problem again.
 
 ## 5. If something goes wrong
-- **Keyboard stuck in update mode, or no typing after a failed flash:** run the same `flash_fw.py ... --yes` command again. It also works when the keyboard is already in update mode. Or run MonsGeek's `ry_upgrade.exe` to put official V408 back.
-- **Going back to stock:** run `ry_upgrade.exe` from MonsGeek's V408 package.
+- **Keyboard stuck in update mode, or no typing after a failed flash:** run the same `flash_fw.py ... --yes` command again. It also works when the keyboard is already in update mode.
+- **Going back to stock V408:**
+  ```
+  python flash_fw.py firmware_2949_v408.bin --yes
+  ```
+  - The tool recognises the stock file and sends exactly the bytes MonsGeek's `ry_upgrade.exe` sends: same size and same checksum (0xB14577).
+  - This also works when the keyboard is stuck in update mode.
+  - If you have `ry_upgrade.exe` from MonsGeek, it works too.
 - **Last resort, keyboard completely dead (not seen so far):** the MCU has a built-in USB DFU mode. Bridge the BOOT0 pin to 3.3 V while plugging in, then write stock firmware at 0x08005000 with `dfu-util`. See the monsgeek-akko-linux project, `docs/HARDWARE.md`. This needs opening the keyboard.

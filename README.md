@@ -4,7 +4,7 @@ An **unofficial** firmware patch for the **MonsGeek M1 V5 TMR** (device ID 2949)
 
 **The symptom:** single key presses sometimes register twice. The second press arrives 15–27 ms after the first release. The driver's debounce setting has no effect on it.
 
-> ⚠️ Unofficial and at your own risk. Tested on one keyboard (Windows 11, USB cable). It flashes the keyboard's main firmware. Recovery steps are in the [guide](docs/HOW_TO_FLASH.md#5-if-something-goes-wrong).
+> ⚠️ Unofficial and at your own risk. Tested on one keyboard (Windows 11, USB cable). It flashes the keyboard's main firmware. Recovery steps are in the [guide](docs/HOW_TO_FLASH.md#5-if-something-goes-wrong). Going back to stock only needs the public V408 file and `flash_fw.py`; MonsGeek's `ry_upgrade.exe` is not required.
 
 ## Install
 
