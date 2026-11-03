@@ -1,0 +1,15 @@
+# build outputs and firmware images (the patched image is published under Releases)
+*.bin
+*.o
+*.elf
+*.map
+*.lst
+patch/hook.syms
+patch/hooks_gen.S
+__pycache__/
+# chatter_test.py logs contain everything you typed
+chatter_log_*.csv
+chatter_report_*.txt
+full_backup_*.json
+settings_backup_*.json
+release/
