@@ -6,6 +6,8 @@ This is an **unofficial** firmware: MonsGeek's V408 plus the fixes described in 
 
 **Tested setup:** one keyboard, on Windows 11, over a USB cable.
 
+> **Easier:** the [companion app](COMPANION_APP.md) can do all of this from its **Firmware** tab, including backing up and restoring your settings automatically.
+
 ## 1. What you need
 - **Windows PC** and the keyboard's **USB cable**. Flashing does not work over the 2.4 GHz dongle or Bluetooth.
 - **Python 3** from python.org. Tick "Add Python to PATH" when installing.
@@ -14,9 +16,9 @@ This is an **unofficial** firmware: MonsGeek's V408 plus the fixes described in 
   pip install hidapi
   ```
 - **The files:**
-  - `firmware_v4.bin` from this repository's **Releases** page. Check that its SHA-256 matches the one shown on the release.
+  - `firmware_v5.bin` from this repository's **Releases** page. Check that its SHA-256 matches the one shown on the release.
   - The `tools` folder. Use **Code → Download ZIP** on the repository page and unzip it.
-  - Put `firmware_v4.bin` in the `tools` folder.
+  - Put `firmware_v5.bin` in the `tools` folder.
 - **Recommended, for recovery:** the stock V408 firmware, [`firmware_2949_v408.bin`](https://github.com/echtzeit-solutions/monsgeek-akko-linux/raw/master/firmwares/2949-v408/firmware_2949_v408.bin) from the monsgeek-akko-linux project. Save it in the `tools` folder. You don't need MonsGeek's `ry_upgrade.exe`: `flash_fw.py` sends this file exactly the way `ry_upgrade.exe` does.
 
 ## 2. Before flashing
@@ -26,13 +28,13 @@ This is an **unofficial** firmware: MonsGeek's V408 plus the fixes described in 
    - On stock firmware it cannot read macros in odd-numbered slots, because of a bug that this firmware fixes.
 3. **Check the image and the keyboard (dry run):** open a Command Prompt in the `tools` folder and run
    ```
-   python flash_fw.py firmware_v4.bin
+   python flash_fw.py firmware_v5.bin
    ```
    It must show `device id 2949`. On any other model the tool refuses to flash. Do not force it.
 
 ## 3. Flash
 ```
-python flash_fw.py firmware_v4.bin --yes
+python flash_fw.py firmware_v5.bin --yes
 ```
 - It takes about 30 seconds. **Do not unplug the keyboard while it runs.**
 - It may say `bootloader REJECTED the image` once. That means a piece of data got lost on the way. It is harmless: the keyboard waits in update mode, and the tool sends the image again automatically, up to 3 times.

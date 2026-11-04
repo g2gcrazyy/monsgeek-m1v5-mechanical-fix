@@ -29,6 +29,8 @@ v2 (2026-11-03), timing taken from a USBPcap capture of ry_upgrade.exe (capture/
   checked: byte 4 = 0x55 means checksum OK and mailbox cleared, 0xAA means rejected.
 """
 import argparse
+import os
+import subprocess
 import hashlib
 import struct
 import sys
@@ -47,7 +49,8 @@ CHUNK_INTERVAL = 0.008                   # s between chunks (ry_upgrade: ~6 ms m
 START_SETTLE = 1.1                       # s after BA C0 before the first chunk (ry_upgrade: 1.05 s)
 MAX_SIZE = 0x08028000 - 0x08005000      # must not reach the config region
 DEV_ID = 2949                            # MonsGeek M1 V5 TMR (GET_USB_VERSION bytes 1-4)
-ATTEMPTS = 3                             # a lost chunk makes the bootloader reject; just resend
+ATTEMPTS = 3                             # a lost chunk makes the bootloader reject; resend
+BOOT_SETTLE = 3.0                        # s to let the bootloader erase the app area after entering it
 # stock V408 (to go back to MonsGeek's firmware without ry_upgrade.exe)
 STOCK_V408_FILE_SIZE = 132864            # firmware_2949_v408.bin as published by monsgeek-akko-linux
 STOCK_V408_SIZE = 0x206F0                # what ry_upgrade.exe sends (USBPcap capture)
@@ -183,6 +186,7 @@ def main():
     ap.add_argument("image")
     ap.add_argument("--yes", action="store_true", help="really flash (otherwise dry run)")
     ap.add_argument("--any-model", action="store_true", help="skip the device id check (do not use)")
+    ap.add_argument("--attempt", type=int, default=1, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     data = open(args.image, "rb").read()
@@ -237,17 +241,27 @@ def main():
         dev = wait_for(BOOT_PID, BOOT_UP, timeout=10.0)
         if not dev:
             sys.exit("bootloader did not appear; unplug/replug the keyboard and check its state")
+        # The bootloader erases the application area when it starts. Transfers started
+        # right after entering it failed several times; ones started later never did.
+        print("waiting for the bootloader to finish erasing ...")
+        time.sleep(BOOT_SETTLE)
+        dev = wait_for(BOOT_PID, BOOT_UP, timeout=10.0) or dev
     else:
         dev = boot[0]
 
-    for attempt in range(1, ATTEMPTS + 1):
-        if attempt > 1:
-            print(f"retrying (attempt {attempt} of {ATTEMPTS}) - the keyboard waits safely in bootloader mode")
-            dev = wait_for(BOOT_PID, BOOT_UP, timeout=10.0)
-            if not dev:
-                break
-        if transfer(dev, data, chunks, csum):
-            break
+    try:
+        ok = transfer(dev, data, chunks, csum)
+    except OSError as e:
+        print(f"USB error during transfer ({e}); the keyboard stays in bootloader mode")
+        ok = False
+
+    if not ok and args.attempt < ATTEMPTS:
+        # Retrying inside the same process returned the same stale rejection every time;
+        # a fresh run of this script has always worked, so retry as a new process.
+        print(f"\nretrying (attempt {args.attempt + 1} of {ATTEMPTS}) - the keyboard waits safely in bootloader mode")
+        time.sleep(2.0)
+        sys.exit(subprocess.call([sys.executable, os.path.abspath(__file__), args.image, "--yes",
+                                  "--attempt", str(args.attempt + 1)]))
 
     print("waiting for the keyboard to reboot into the new firmware ...")
     if wait_for(NORMAL_PID, NORMAL_UP, NORMAL_USAGE, timeout=20.0):
@@ -255,7 +269,7 @@ def main():
         print(f"OK: keyboard is back in normal mode, firmware v{v:x}" if v is not None else "OK: keyboard is back")
     elif find(BOOT_PID, BOOT_UP):
         print("Keyboard is still in bootloader mode (checksum rejected or transfer error).")
-        print("Recover with the vendor ry_upgrade.exe (V408 package), or retry this script.")
+        print("Run this script again (it works from bootloader mode), or flash stock firmware_2949_v408.bin.")
     else:
         print("Keyboard not detected yet; unplug and replug it, then check.")
 

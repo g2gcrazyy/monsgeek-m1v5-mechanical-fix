@@ -15,6 +15,8 @@ if [ -n "${CHATTER_HOLD_MS:-}" ]; then CFLAGS="$CFLAGS -DHOLD_MS=${CHATTER_HOLD_
 # CHATTER_V4=1 -> debounce slider sets the hold, Snap Tap for mechanical keys, vendor-command
 # range checks, boot config clamp (handlers.c + patcher.py)
 if [ -n "${CHATTER_V4:-}" ]; then CFLAGS="$CFLAGS -DCHATTER_V4"; export CHATTER_V4; fi
+# CHATTER_PALETTE=1 (with CHATTER_V4) -> custom dazzle palette, vendor command 0xEE (v5)
+if [ -n "${CHATTER_PALETTE:-}" ]; then CFLAGS="$CFLAGS -DCHATTER_PALETTE"; export CHATTER_PALETTE; fi
 # CHATTER_MACROFIX=1 -> fix the GET_MACRO read stride bug (patcher.py)
 
 python3 patcher.py generate

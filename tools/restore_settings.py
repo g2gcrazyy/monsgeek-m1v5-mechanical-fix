@@ -4,7 +4,7 @@
     python restore_settings.py full_backup_XXXX.json --apply  write it to the keyboard
 
 Restores: LED effect/colour (0x07), side LED (0x08), key bindings for all profiles and
-layers (0x0A, only keys that differ) and macros (0x0B). Macros are only restored when the
+layers (0x0A, only keys that differ), macros (0x0B), Snap Tap pairs and (v5) the dazzle palette. Macros are only restored when the
 backup holds their real contents: backups made on stock / pre-v4 firmware could not read
 odd macro slots (GET_MACRO bug), so keys bound to those slots are left as they are.
 """
@@ -76,6 +76,22 @@ def main():
             keywrites[-1][1][5] = 1                              # last write saves to flash
         for desc, frame in keywrites:
             plan.append((desc, frame, 7))
+
+        pal = bk.get("dazzle_palette")
+        if pal is not None:
+            r = command(h, 0xEE, 0xFF)
+            if r[0] == 0xEE and r[1] <= 6 and not any(r[2:8]):      # v5 firmware
+                cur = [r[8 + 3 * i:11 + 3 * i].hex() for i in range(r[1])]
+                if cur != pal:
+                    plan.append((f"dazzle palette: {' '.join(pal) or 'off'}",
+                                 [0xEE, len(pal), 0, 0, 0, 0, 0, 0] + [x for c in pal for x in bytes.fromhex(c)], 7))
+        if bk.get("snaptap_partners"):
+            want = bytes.fromhex(bk["snaptap_partners"])
+            have = b"".join(command(h, 0xE5, 9, 1, pg) for pg in range(2))
+            diff = [k for k in range(96) if want[k] != have[k]]
+            for i, k in enumerate(diff):
+                plan.append((f"Snap Tap partner of key {k}: {want[k]}",
+                             [0x65, 9, 0, k, 1 if i == len(diff) - 1 else 0, 0, 0, 0, want[k]], 7))
 
         for desc, _, _ in plan:
             if desc:

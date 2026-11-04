@@ -8,17 +8,31 @@ An **unofficial** firmware patch for the **MonsGeek M1 V5 TMR** (device ID 2949)
 
 ## Install
 
-1. Download `firmware_v4.bin` from **[Releases](../../releases)** and the `tools` folder (**Code → Download ZIP**).
-2. Follow **[docs/HOW_TO_FLASH.md](docs/HOW_TO_FLASH.md)**. In short:
-   ```
-   pip install hidapi
-   python flash_fw.py firmware_v4.bin          (dry run: must show "device id 2949")
-   python flash_fw.py firmware_v4.bin --yes
-   python polling.py 1000
-   ```
-3. Your mechanical keys must be **switch type 7** (MonsGeek's mechanical type). `python backup_full.py` shows the switch types.
+1. Download `firmware_v5.bin` from **[Releases](../../releases)** and this repository (**Code → Download ZIP**). Put the `.bin` in the `tools` folder.
+2. Install Python 3 and run `pip install hidapi`.
+3. Flash it, either way:
+   - **With the app:** double-click `tools\MonsGeek Companion.bat`, open the **Firmware** tab and press **Flash...**. It backs up your settings first and restores them afterwards. See [docs/COMPANION_APP.md](docs/COMPANION_APP.md).
+   - **From the command line:** follow [docs/HOW_TO_FLASH.md](docs/HOW_TO_FLASH.md):
+     ```
+     python flash_fw.py firmware_v5.bin          (dry run: must show "device id 2949")
+     python flash_fw.py firmware_v5.bin --yes
+     python polling.py 1000
+     ```
+4. Your mechanical keys must be **switch type 7** (MonsGeek's mechanical type). `python backup_full.py` shows the switch types.
 
-Flashing resets lighting, macros and polling rate, so note them down first.
+Flashing resets lighting, macros, Snap Tap and polling rate. The app's automatic backup/restore puts them back; on the command line, run `backup_full.py` first.
+
+## Companion app
+
+![Companion app](docs/companion_tabs.png)
+
+`tools/companion.py` is a small Windows app to use alongside MonsGeek's driver. It covers:
+- **Effect colours:** a colour wheel for the two dazzle colours;
+- **Keys:** the debounce time, polling rate and Snap Tap pairs;
+- **Backup & restore:** settings backups, with a preview of what a restore would change;
+- **Firmware:** a flasher that keeps your settings.
+
+How it works: [docs/COMPANION_APP.md](docs/COMPANION_APP.md).
 
 ## Why it happens
 
@@ -40,6 +54,7 @@ Everything else is stock V408.
 | **Snap Tap** for mechanical keys | `python snaptap.py A D`: pressing one key releases the other. Clear it with `snaptap.py clear all` where it isn't allowed, e.g. CS2 on Valve's servers |
 | Macro read-back fixed | Macros can be backed up (`backup_full.py`) and restored (`restore_settings.py`) |
 | Range checks on settings commands, and a check on saved settings at boot | Bad or corrupted values can no longer corrupt memory or put the keyboard in a crash loop |
+| **Two-colour dazzle** (v5) | Pick two colours (app or `palette.py`) and the dazzle option uses them. Breathing fades A → B → A; meteors, ripples, trains, snowflakes and peaks each get one colour, alternating; ripples fade with distance and blend where they cross; the sine wave gets a moving A → B band. See [the app docs](docs/COMPANION_APP.md#effect-colours) |
 
 Details are in [docs/REPORT_2_more_bugs.md](docs/REPORT_2_more_bugs.md).
 
@@ -61,17 +76,19 @@ The release binary can be reproduced exactly from public files:
 3. Run:
    ```
    cd patch
-   CHATTER_V4=1 CHATTER_MACROFIX=1 CHATTER_NOGATE=1 CHATTER_HOLD_MS=5 CHATTER_OUT=firmware_v4.bin bash build.sh
-   sha256sum firmware_v4.bin
+   CHATTER_PALETTE=1 CHATTER_V4=1 CHATTER_MACROFIX=1 CHATTER_NOGATE=1 CHATTER_HOLD_MS=5 CHATTER_OUT=firmware_v5.bin bash build.sh
+   sha256sum firmware_v5.bin
    ```
-   The hash should match the release.
+   The hash should match the release. Leave out `CHATTER_PALETTE=1` to build v4.
 
 **Tests:** `patch/test/` compiles the real patch code on a PC and runs it against scripted key events and vendor commands.
-- Build the harness in WSL:
-  ```
-  gcc -O1 -I . -DHOLD_MS=5 -DCHATTER_V4 -o /tmp/chatterfix_harness test/harness.c
-  ```
-- Then run on Windows: `HOLD_MS=5 python test/v4_test.py` and `python test/logic_test.py`.
+- **v4 tests:**
+  1. Build the harness in WSL:
+     ```
+     gcc -O1 -I . -DHOLD_MS=5 -DCHATTER_V4 -o /tmp/chatterfix_harness test/harness.c
+     ```
+  2. On Windows, run `HOLD_MS=5 python test/v4_test.py` and `python test/logic_test.py`.
+- **v5 palette and effect tests:** build the harness with `-DCHATTER_PALETTE` added, then run `python test/palette_test.py`.
 
 ## Tools (`tools/`)
 
@@ -81,7 +98,10 @@ The release binary can be reproduced exactly from public files:
 | `chatter_test.py` | Measures double presses while you type (Windows) |
 | `polling.py`, `debounce.py` | Read or set the polling rate and the debounce |
 | `snaptap.py` | Set or clear Snap Tap pairs |
-| `backup_full.py`, `restore_settings.py` | Back up and restore settings over USB |
+| `backup_full.py`, `restore_settings.py` | Back up and restore settings over USB, including macros, Snap Tap and the palette |
+| `palette.py` | Set the two dazzle colours (`python palette.py ff6600 00ccff`, or `off`) |
+| `effect_tour.py` | Show each lighting mode's number, or print the current one (`--now`) |
+| `companion.py` | The companion app (start it with `MonsGeek Companion.bat`) |
 
 ## Credits
 

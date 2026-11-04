@@ -21,7 +21,9 @@
 
 #define XSTR_(x) #x
 #define XSTR(x) XSTR_(x)
-#ifdef CHATTER_V4
+#if defined(CHATTER_V4) && defined(CHATTER_PALETTE)
+#define VER "v5"
+#elif defined(CHATTER_V4)
 #define VER "v4"
 #else
 #define VER "v3"
@@ -203,7 +205,11 @@ int chatter_cmd_ok(volatile uint8_t *b)
 {
     switch (b[0]) {
     case 0x04: return b[1] < 4;                                         /* SET_PROFILE */
+#ifdef CHATTER_PALETTE
+    case 0x07: return b[1] < 25;        /* SET_LEDPARAM: only modes 0-24 render; 25-31 hold the palette */
+#else
     case 0x07: return b[1] < 32;                                        /* SET_LEDPARAM mode */
+#endif
     case 0x0A:                                                          /* SET_KEYMATRIX */
         if (b[1] >= 4 || b[6] >= 4) return 0;                           /* profile, layer */
         if (b[2] != 0xFF) return b[2] < 128;                            /* single key */
@@ -230,8 +236,324 @@ int chatter_cmd_ok(volatile uint8_t *b)
     }
 }
 
+#ifdef CHATTER_PALETTE
+/* ---- custom "dazzle" palette --------------------------------------------------------
+ * V408 has two kinds of dazzle colour: random picks from a 6-colour table (0x08025442)
+ * and a red->green->blue colour wheel (0x08006EF6, 22 call sites). Both end up in
+ * ws2812_set_pixel(led, brightness, R, G, B), which every effect uses (49 calls).
+ * We hook it (0x080070EA, after its bounds check) and, when the colour option is dazzle
+ * (LED state 0x20008528 + 30 == 7) and a palette is set, map each saturated colour's
+ * hue onto a path through the user's colours (A -> B -> ... -> A, blended), keeping its
+ * brightness. Whites/greys and the other colour options are untouched.
+ * Stored in the config header in the colour slots of LED modes 25-31 (header+0xCD,
+ * 21 bytes; the renderer only handles modes 0-24): [0x50, n, 0x50^n, n x RGB].
+ * Vendor command 0xEE [n (0 = off, 0xFF = just read), 0..., chk, n x RGB @ b[8]]. */
+#define PAL_SLOTS 0xCDu
+#define PAL_MAGIC 0x50u
+#define LED_COLOUR_OPTION (*(volatile uint8_t *)0x20008546u)   /* 7 = dazzle */
+static uint8_t pal_n, pal_rgb[18];
+#ifndef HOST_TEST
+static uint8_t pal_ready;
+#endif
+
+/* Read the stored palette (n = 0 when none/invalid). */
+uint32_t palette_load(const volatile uint8_t *slots, uint8_t *rgb)
+{
+    uint32_t n = slots[1];
+    if (slots[0] != PAL_MAGIC || n < 1 || n > 6 || slots[2] != (PAL_MAGIC ^ n))
+        return 0;
+    for (uint32_t i = 0; i < n * 3; i++)
+        rgb[i] = slots[3 + i];
+    return n;
+}
+
+/* Map a saturated colour onto the palette path by hue. c = {R, G, B}. 1 if changed. */
+int palette_remap(uint8_t *c, uint32_t n, const uint8_t *pal)
+{
+    int32_t r = c[0], g = c[1], b = c[2];
+    int32_t mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    int32_t mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    if (n == 0 || mx == 0 || mn * 4 > mx)
+        return 0;                               /* black, white, grey, pastel: leave */
+    int32_t d = mx - mn, h;                     /* hue 0..1535, 256 per sector */
+    if (mx == r)
+        h = g >= b ? (g - b) * 256 / d : 1536 - (b - g) * 256 / d;
+    else if (mx == g)
+        h = 512 + (b - r) * 256 / d;
+    else
+        h = 1024 + (r - g) * 256 / d;
+    if (h >= 1536)
+        h -= 1536;
+    uint32_t pos = (uint32_t)h * n;             /* 0 .. 1536*n */
+    uint32_t i = pos / 1536, f = (pos % 1536) * 256 / 1536, j = (i + 1) % n;
+    for (uint32_t k = 0; k < 3; k++) {
+        uint32_t v = (pal[i * 3 + k] * (256 - f) + pal[j * 3 + k] * f) >> 8;
+        c[k] = (uint8_t)(v * (uint32_t)mx / 255);
+    }
+    return 1;
+}
+
+/* Called from the ws2812_set_pixel hook. regs: saved r0-r3, r12, lr, then the caller's
+ * stack argument (B). R = r2, G = r3. */
+/* ---- per-effect palette behaviour (dazzle + palette set) ------------------------------
+ * "Object" effects (ripple 5, peaks 9, sine 10, snow 17, meteor 18, train 23): our hooks
+ * below make each object store its colour as weights, red = amount of A, blue = amount of
+ * B (green 0); the output is A*red + B*blue. Fades scale both, so trails keep their colour.
+ * Breathing (2): colour follows the breath, A when dim -> B at the peak -> A.
+ * Everything else: hue remap (palette_remap). */
+#define LED_MODE        (*(volatile uint8_t *)0x20007478u)   /* config header byte 8 */
+#define LED_BRIGHTNESS  (*(volatile uint8_t *)0x20008548u)   /* LED state +0x20, percent */
+
+static int is_object_mode(uint32_t m)
+{
+    return m == 5 || m == 9 || m == 10 || m == 17 || m == 18 || m == 23;
+}
+
+/* c = {R, G, B} going to the LED; bright = set_pixel's brightness argument. */
+void effect_colour(uint32_t mode, uint8_t *c, uint32_t bright, uint32_t gbright,
+                   uint32_t n, const uint8_t *pal)
+{
+    const uint8_t *A = pal, *B = n >= 2 ? pal + 3 : pal;
+    if (mode == 2) {                                    /* breathing */
+        uint32_t t = gbright ? bright * 255u / gbright : 255u;
+        if (t > 255)
+            t = 255;
+        for (uint32_t k = 0; k < 3; k++)
+            c[k] = (uint8_t)((A[k] * (255u - t) + B[k] * t) / 255u);
+    } else if (is_object_mode(mode)) {
+        uint32_t wa = c[0], wb = c[2], tot = wa + wb;
+        if (tot > 255) {                                /* mix: blend A/B by ratio, full intensity */
+            wa = wa * 255u / tot;
+            wb = 255u - wa;
+        }
+        for (uint32_t k = 0; k < 3; k++) {
+            uint32_t v = (A[k] * wa + B[k] * wb) / 255u;
+            c[k] = (uint8_t)(v > 255 ? 255 : v);
+        }
+    } else {
+        palette_remap(c, n, pal);
+    }
+}
+
+void chatter_pixel_remap(uint32_t *regs)
+{
+    if (pal_n == 0 || LED_COLOUR_OPTION != 7)
+        return;
+    uint8_t c[3] = { (uint8_t)regs[2], (uint8_t)regs[3], (uint8_t)regs[6] };
+    effect_colour(LED_MODE, c, regs[1] & 0xFF, LED_BRIGHTNESS, pal_n, pal_rgb);
+    regs[2] = c[0];
+    regs[3] = c[1];
+    regs[6] = c[2];
+}
+
+/* ---- object colours ---------------------------------------------------------------------
+ * The effects pick dazzle colours with `rand() % 6` into the 6-colour table (index 0 = red,
+ * 2 = blue). The rand() calls on those paths are redirected here and return 0 (A) or 2 (B).
+ * Effects state: 0x20008528. */
+#ifndef HOST_TEST
+#define FX ((volatile uint8_t *)0x20008528u)
+#define fw_rand ((int (*)(void))0x080054C5u)               /* firmware rand() */
+#define led_ripple_effect ((uint32_t (*)(uint32_t, uint32_t, uint32_t))0x08012879u)
+#define PAL_ACTIVE (pal_n != 0 && LED_COLOUR_OPTION == 7)
+
+uint32_t snow_hist[16];                 /* per column: flake colours, newest in bit 0 */
+static uint8_t snow_next, rip_next, rip_colour[16];
+static uint32_t rip_prev;
+
+/* meteor (18): one colour per meteor, alternating; a meteor starts at step 0 (+60) */
+static uint8_t met_colour;
+int chatter_rand_meteor(void)
+{
+    if (!PAL_ACTIVE)
+        return fw_rand();
+    if (FX[60] == 0)
+        met_colour ^= 1;
+    return met_colour ? 2 : 0;
+}
+
+/* peaks (9): blobs are separated by 0xFF in the script table (pointer at 0x08008A84),
+ * indexed by +60. Colour = parity of the separators before the current entry. */
+int chatter_rand_peaks(void)
+{
+    if (!PAL_ACTIVE)
+        return fw_rand();
+    const uint8_t *tbl = *(const uint8_t *const *)0x08008A84u;
+    uint32_t idx = FX[60], seps = 0;
+    for (uint32_t i = 0; i < idx; i++)
+        if (tbl[i] == 0xFF)
+            seps++;
+    return (seps & 1) ? 2 : 0;
+}
+
+/* train (23): even rows run one way, odd rows the other -> row parity (+52, u32) */
+int chatter_rand_train(void)
+{
+    if (!PAL_ACTIVE)
+        return fw_rand();
+    return (*(volatile uint32_t *)(FX + 52) & 1) ? 2 : 0;
+}
+
+/* snow (17): masks at +0x743+col, bit = row, shifted down each tick. On a new flake push
+ * the next colour into the column history; an LED at (col,row) belongs to the flake with
+ * popcount(newer flakes above it) as its history index. */
+int chatter_rand_snow_spawn(void)
+{
+    int r = fw_rand();
+    uint32_t col = (uint32_t)r & 15u;
+    if (r >= 0 && !(FX[0x743 + col] & 1)) {
+        snow_hist[col] = (snow_hist[col] << 1) | snow_next;
+        snow_next ^= 1;
+    }
+    return r;
+}
+
+int chatter_snow_colour(uint32_t col, uint32_t row)
+{
+    if (!PAL_ACTIVE)
+        return fw_rand();
+    uint32_t above = FX[0x743 + (col & 15)] & ((1u << row) - 1u), k = 0;
+    while (above) {
+        above &= above - 1u;
+        k++;
+    }
+    return ((snow_hist[col & 15] >> k) & 1) ? 2 : 0;
+}
+
+/* ripple (5) and sine (10) draw through led_ripple_effect(row, centre, radius), which lights
+ * up to two idle LEDs: posTbl[row*16 + centre -/+ radius]. Our wrappers note which LEDs it
+ * will write, call it, then overwrite their stored colour with our weights. */
+#define POS_TBL   ((const uint8_t *)0x080250BDu)          /* 6 rows x 16 LED indices */
+#define LED_BUSY  (FX + 0x5A9)                            /* per-LED: lit/fading */
+#define LED_RGB   (FX + 0x5FB)                            /* per-LED R,G,B (stride 4) */
+
+static uint8_t add_sat(uint32_t a, uint32_t b)
+{
+    return (uint8_t)(a + b > 255 ? 255 : a + b);
+}
+
+/* mix != 0 (ripple): an LED that is still lit by another object is not redrawn by the
+ * firmware; we add our weights to its colour instead, so overlapping ripples mix. */
+static uint32_t draw_with_colour(uint32_t row, uint32_t centre, uint32_t radius,
+                                 uint8_t wa, uint8_t wb, int mix)
+{
+    if (!PAL_ACTIVE)
+        return led_ripple_effect(row, centre, radius);
+    int32_t leds[2] = { -1, -1 };
+    uint8_t was_busy[2] = { 0, 0 };
+    if (row < 64) {
+        if (centre >= radius)
+            leds[0] = POS_TBL[row * 16 + centre - radius];
+        if (centre + radius <= 15)
+            leds[1] = POS_TBL[row * 16 + centre + radius];
+        if (radius == 0)
+            leds[1] = -1;                           /* same LED twice */
+        for (int i = 0; i < 2; i++) {
+            if (leds[i] >= 82)
+                leds[i] = -1;
+            else if (leds[i] >= 0)
+                was_busy[i] = LED_BUSY[leds[i]] != 0;
+        }
+    }
+    uint32_t ret = led_ripple_effect(row, centre, radius);
+    for (int i = 0; i < 2; i++) {
+        if (leds[i] < 0)
+            continue;
+        volatile uint8_t *p = LED_RGB + leds[i] * 4;
+        if (!was_busy[i] && LED_BUSY[leds[i]]) {    /* freshly lit by this draw */
+            p[0] = wa;
+            p[1] = 0;
+            p[2] = wb;
+            chatter_stats[6]++;
+        } else if (was_busy[i] && mix) {            /* overlap: mix the colours */
+            p[0] = add_sat(p[0], wa);
+            p[2] = add_sat(p[2], wb);
+            LED_BUSY[leds[i]] = 1;                  /* make the crossing light up again */
+            chatter_stats[7]++;
+        }
+    }
+    return ret;
+}
+
+/* ripple: slots 0-15, struct at +0x81E + s*4 = {row, centre, radius16}; stage masks at
+ * +4..+24. New ripples (a slot bit appearing) get the next colour in chatter_flush. */
+static void ripple_poll(void)
+{
+    uint32_t u = 0;
+    for (uint32_t m = 0; m < 6; m++)
+        u |= *(volatile uint32_t *)(FX + 4 + m * 4);
+    u &= 0xFFFF;
+    uint32_t fresh = u & ~rip_prev;
+    for (uint32_t s = 0; s < 16; s++)
+        if (fresh & (1u << s)) {
+            rip_colour[s] = rip_next;
+            rip_next ^= 1;
+        }
+    rip_prev = u;
+}
+
+uint32_t chatter_ripple_draw(uint32_t row, uint32_t centre, uint32_t radius)
+{
+    uint32_t colour = 0, dist = radius;
+    for (uint32_t s = 0; s < 16; s++) {
+        int32_t d = (int32_t)row - (int32_t)FX[0x81E + s * 4];
+        if ((rip_prev & (1u << s)) && FX[0x81F + s * 4] == centre && d >= -3 && d <= 3) {
+            colour = rip_colour[s];
+            dist += (uint32_t)(d < 0 ? -d : d);         /* rows away count as distance too */
+            break;
+        }
+    }
+    /* fainter further from the key: 255 * ((9 - dist) / 9)^2, floor 12 */
+    int32_t left = 9 - (int32_t)dist;
+    int32_t dim = left > 0 ? 255 * left * left / 81 : 0;
+    if (dim < 12)
+        dim = 12;
+    return draw_with_colour(row, centre, radius, colour ? 0 : (uint8_t)dim, colour ? (uint8_t)dim : 0, 1);
+}
+
+/* sine: segment slot 0-29 (r6 at the call) -> gradient A -> B -> A over one wave period */
+uint32_t chatter_sine_draw(uint32_t row, uint32_t centre, uint32_t radius, uint32_t slot)
+{
+    uint32_t t = slot < 15 ? slot * 17u : (30u - (slot > 30 ? 30 : slot)) * 17u;
+    if (t > 255)
+        t = 255;
+    return draw_with_colour(row, centre, radius, (uint8_t)(255 - t), (uint8_t)t, 0);
+}
+#endif /* !HOST_TEST */
+#endif
+
 #ifndef HOST_TEST
 #define VB ((volatile uint8_t *)0x200082DCu)    /* [0] pending, [2..] host report */
+#ifdef CHATTER_PALETTE
+#define HDR       ((volatile uint8_t *)0x20007470u)   /* config header (0xEC bytes, saved) */
+#define CFG_DIRTY (*(volatile uint8_t *)0x200000FCu)  /* bit 2: save the config header */
+
+static void palette_cmd(volatile uint8_t *b)
+{
+    uint32_t s = 0;
+    for (uint32_t i = 0; i < 8; i++)
+        s += b[i];
+    uint32_t n = b[1];
+    if ((s & 0xFF) == 0xFF && n <= 6) {
+        volatile uint8_t *p = HDR + PAL_SLOTS;
+        p[0] = n ? PAL_MAGIC : 0;
+        p[1] = (uint8_t)n;
+        p[2] = n ? (uint8_t)(PAL_MAGIC ^ n) : 0;
+        for (uint32_t i = 0; i < 18; i++)
+            p[3 + i] = i < n * 3 ? b[8 + i] : 0;
+        CFG_DIRTY |= 4;                         /* same as SET_LEDPARAM: save the header */
+        pal_ready = 0;
+    }
+    /* reply: [0xEE, n, 0 x 6, n x RGB] */
+    volatile uint8_t *p = HDR + PAL_SLOTS;
+    uint32_t cur = (p[0] == PAL_MAGIC && p[1] >= 1 && p[1] <= 6 && p[2] == (PAL_MAGIC ^ p[1])) ? p[1] : 0;
+    b[0] = 0xEE;
+    b[1] = (uint8_t)cur;
+    for (uint32_t i = 2; i < 8; i++)
+        b[i] = 0;
+    for (uint32_t i = 0; i < 18; i++)
+        b[8 + i] = i < cur * 3 ? p[3 + i] : 0;
+}
+#endif
 #ifdef CHATTER_DEBUG
 int chatter_vendor_cmd(void);
 #endif
@@ -246,6 +568,28 @@ int chatter_vendor_filter(void)
         chatter_stats[5]++;
         return 1;
     }
+#ifdef CHATTER_PALETTE
+    if (VB[2] == 0xEE) {
+        palette_cmd(VB + 2);
+        VB[1] = 0;
+        VB[0] = 0;
+        return 1;
+    }
+    if (VB[2] == 0xEF) {                        /* diagnostic: read 56 bytes of RAM */
+        volatile uint8_t *b = VB + 2;
+        uint32_t a = b[1] | (uint32_t)b[2] << 8 | (uint32_t)b[3] << 16 | (uint32_t)b[4] << 24;
+        for (uint32_t i = 1; i < 8; i++)
+            b[i] = 0;
+        if (a >= 0x20000000u && a <= 0x20018000u - 56u) {
+            b[1] = 1;
+            for (uint32_t i = 0; i < 56; i++)
+                b[8 + i] = ((volatile uint8_t *)a)[i];
+        }
+        VB[1] = 0;
+        VB[0] = 0;
+        return 1;
+    }
+#endif
 #ifdef CHATTER_DEBUG
     return chatter_vendor_cmd();
 #else
@@ -264,7 +608,23 @@ void chatter_load_header(uint32_t src, uint8_t *dst, uint32_t n)
         dst[0] = 0;
     if (dst[8] >= 32)
         dst[8] = 0;
+#ifdef CHATTER_PALETTE
+    pal_ready = 0;                              /* header (re)loaded: rebuild the palette */
+#endif
 }
+
+#ifdef CHATTER_PALETTE
+static void palette_poll(void)
+{
+    if (!pal_ready) {
+        pal_n = 0;                              /* the pixel hook may run in between */
+        pal_n = (uint8_t)palette_load(HDR + PAL_SLOTS, pal_rgb);
+        pal_ready = 1;
+    }
+    if (LED_MODE == 5)
+        ripple_poll();
+}
+#endif
 #endif /* !HOST_TEST */
 #else  /* !CHATTER_V4 */
 static uint32_t hold_ticks(void) { return HOLD_TICKS; }
@@ -502,6 +862,9 @@ void chatter_flush(void)
 {
 #ifdef CHATTER_DEBUG
     dbg_loop();
+#endif
+#if defined(CHATTER_PALETTE) && !defined(HOST_TEST)
+    palette_poll();
 #endif
     uint32_t now = chatter_ticks, hold = hold_ticks();
     for (int i = 0; i < NSLOTS; i++) {

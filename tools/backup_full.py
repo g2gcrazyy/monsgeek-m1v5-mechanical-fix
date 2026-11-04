@@ -46,6 +46,10 @@ def main():
                               ("lift_travel", 1, 4), ("rt_press", 2, 4), ("rt_lift", 3, 4),
                               ("bottom_deadzone", 6, 4), ("top_deadzone", 0xFB, 4))}
         print("magnetism tables read")
+        r = command(h, 0xEE, 0xFF)                      # v5 dazzle palette (older firmware echoes)
+        if r[0] == 0xEE and r[1] <= 6 and not any(r[2:8]):
+            snap["dazzle_palette"] = [r[8 + 3 * i:11 + 3 * i].hex() for i in range(r[1])]
+        snap["snaptap_partners"] = "".join(command(h, 0xE5, 9, 1, pg).hex() for pg in range(2))
     finally:
         h.close()
 

@@ -24,6 +24,46 @@ void key_event_orig(uint32_t col, uint32_t row, uint32_t layer, uint32_t pressed
 
 int main(int argc, char **argv)
 {
+#ifdef CHATTER_PALETTE
+    if (argc > 1 && !strcmp(argv[1], "palette")) {
+        /* stdin: "<21 header slot bytes hex> | R G B (decimal)" -> "n R G B changed" */
+        char line[512];
+        while (fgets(line, sizeof line, stdin)) {
+            char *bar = strchr(line, '|');
+            if (!bar) continue;
+            *bar = 0;
+            uint8_t slots[21] = { 0 }, rgb[18] = { 0 };
+            unsigned n = 0, v, r, g, b;
+            for (char *s = strtok(line, " \r\n"); s && n < 21; s = strtok(0, " \r\n"))
+                if (sscanf(s, "%x", &v) == 1) slots[n++] = (uint8_t)v;
+            if (sscanf(bar + 1, "%u %u %u", &r, &g, &b) != 3) continue;
+            uint32_t pn = palette_load(slots, rgb);
+            uint8_t c[3] = { (uint8_t)r, (uint8_t)g, (uint8_t)b };
+            int ch = palette_remap(c, pn, rgb);
+            printf("%u %u %u %u %d\n", (unsigned)pn, c[0], c[1], c[2], ch);
+        }
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "effect")) {
+        /* stdin: "<21 slot bytes hex> | mode bright gbright R G B" -> "R G B" */
+        char line[512];
+        while (fgets(line, sizeof line, stdin)) {
+            char *bar = strchr(line, '|');
+            if (!bar) continue;
+            *bar = 0;
+            uint8_t slots[21] = { 0 }, rgb[18] = { 0 };
+            unsigned n = 0, v, m, br, gb, r, g, b;
+            for (char *s = strtok(line, " \r\n"); s && n < 21; s = strtok(0, " \r\n"))
+                if (sscanf(s, "%x", &v) == 1) slots[n++] = (uint8_t)v;
+            if (sscanf(bar + 1, "%u %u %u %u %u %u", &m, &br, &gb, &r, &g, &b) != 6) continue;
+            uint32_t pn = palette_load(slots, rgb);
+            uint8_t c[3] = { (uint8_t)r, (uint8_t)g, (uint8_t)b };
+            effect_colour(m, c, br, gb, pn, rgb);
+            printf("%u %u %u\n", c[0], c[1], c[2]);
+        }
+        return 0;
+    }
+#endif
 #ifdef CHATTER_V4
     if (argc > 1 && !strcmp(argv[1], "guard")) {
         char line[512];
